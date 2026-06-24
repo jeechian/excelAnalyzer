@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #0f172a;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Table styles */
+.excel-table {
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.excel-table th {
+  background: #1e293b;
+  color: #94a3b8;
+  font-weight: 500;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border: 1px solid #334155;
+  white-space: nowrap;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.excel-table td {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #1e293b;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+
+.excel-table tr:hover td {
+  background: #1e293b;
+}
+
+.excel-table tr:nth-child(even) td {
+  background: #0f1f33;
+}
+
+.excel-table tr:nth-child(even):hover td {
+  background: #1e293b;
+}
