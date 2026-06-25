@@ -54,6 +54,7 @@ interface MetricState {
   col: string; // "__count__" or column name
   filterValues: string[];
   numericRange?: { min?: number; max?: number }; // for numeric metric: filter groups by sum range
+  dateFilterCol?: string;
   dateRange?: { start?: string; end?: string };   // for date metric: defines date window
 }
 
