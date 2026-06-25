@@ -238,7 +238,9 @@ export function computeContribution(
   const pivotValues =
     onlyIsCat && onlyMetric!.filterValues.length >= 2 ? onlyMetric!.filterValues : undefined;
 
-  // Build working set first — dimension filters define the 100% base
+  // Build working set — dimension filters narrow what gets grouped/displayed.
+  // The denominator (100%) is always derived from allRows + metric conditions only,
+  // so dimension filters only affect the numerator, never the percentage base.
   let working = allRows;
   for (const dim of dimensions) {
     if (dim.numericRange && (dim.numericRange.min !== undefined || dim.numericRange.max !== undefined)) {
@@ -355,18 +357,19 @@ export function computeContribution(
     return { rows: multiRows, metricMetas: [synthMeta], pivotValues: undefined };
   }
 
-  // Metric metadata and global totals — computed from working, not allRows
+  // Metric metadata and global totals — always computed from allRows (metric conditions only).
+  // Dimension filters must NOT change the denominator; they only affect grouping.
   const metricMetas: MetricMeta[] = metrics.map((m) => {
     const isNumericM = m.col !== "__count__" && numericCols.has(m.col);
     const isCategorical = m.col !== "__count__" && !isNumericM;
 
     let globalRows: Record<string, unknown>[];
     if (pivotValues && m === onlyMetric) {
-      globalRows = working.filter((r) =>
+      globalRows = allRows.filter((r) =>
         pivotValues.includes(String(r[m.col] ?? ""))
       );
     } else {
-      globalRows = applyMetricFilters(working, m);
+      globalRows = applyMetricFilters(allRows, m);
       if (isCategorical && m.filterValues.length > 0) {
         globalRows = globalRows.filter((r) =>
           m.filterValues.includes(String(r[m.col] ?? ""))

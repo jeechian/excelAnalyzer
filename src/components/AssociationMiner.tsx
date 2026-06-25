@@ -225,16 +225,19 @@ export default function AssociationMiner({ data }: Props) {
           <Network className="w-4 h-4 text-violet-400" />
           <span className="font-semibold text-slate-200 text-sm">Contribution Analysis</span>
           <span className="text-xs text-slate-500">
-            See how much each group contributes to a metric
+            Filter your dataset, then see how each dimension group contributes
           </span>
         </div>
       </div>
 
-      <div className="p-5 space-y-5 bg-slate-950">
-        {/* ── Dimensions ── */}
-        <div>
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">
-            Dimensions
+      <div className="p-5 flex flex-col gap-5 bg-slate-950">
+        {/* ── Dimension ── */}
+        <div className="order-2 pt-4 border-t border-slate-800/60">
+          <p className="text-xs font-medium text-violet-400/80 uppercase tracking-wider mb-1">
+            Dimension — Contribution Breakdown
+          </p>
+          <p className="text-[11px] text-slate-500 mb-3">
+            Choose a column to group by. The result shows how much each group contributes to your filtered dataset.
           </p>
 
           <div className="space-y-3">
@@ -456,10 +459,13 @@ export default function AssociationMiner({ data }: Props) {
           </button>
         </div>
 
-        {/* ── Metrics ── */}
-        <div className="pt-4 border-t border-slate-800/60">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">
-            Metrics — what to measure (defines 100%)
+        {/* ── Filter ── */}
+        <div className="order-1">
+          <p className="text-xs font-medium text-amber-400/80 uppercase tracking-wider mb-1">
+            Filter — Define Your Dataset (100%)
+          </p>
+          <p className="text-[11px] text-slate-500 mb-3">
+            Set the condition that defines which rows to analyse. All matching rows = 100%.
           </p>
 
           <div className="space-y-5">
@@ -507,17 +513,17 @@ export default function AssociationMiner({ data }: Props) {
 
                     {isNumericM && (
                       <span className="text-xs text-amber-300/80 mt-1.5">
-                        → Sum of {m.col} per group
+                        → Sum of {m.col} across filtered rows (= 100%)
                       </span>
                     )}
                     {isCount && (
                       <span className="text-xs text-slate-500 mt-1.5">
-                        → Count of rows per group
+                        → Count all rows (= 100%)
                       </span>
                     )}
                     {isDateMetric && (
                       <span className="text-xs text-emerald-400/80 mt-1.5">
-                        → Count of rows per group (filtered by date range)
+                        → Count rows within the date range (= 100%)
                       </span>
                     )}
 
@@ -640,7 +646,7 @@ export default function AssociationMiner({ data }: Props) {
                       />
                       {(m.dateRange?.start || m.dateRange?.end) && (
                         <span className="text-[11px] text-emerald-400/60">
-                          → defines 100%
+                          → these rows = 100%
                         </span>
                       )}
                     </div>
@@ -656,12 +662,12 @@ export default function AssociationMiner({ data }: Props) {
             className="mt-4 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 border border-dashed border-slate-700 hover:border-slate-600 rounded-lg px-3 py-1.5 transition-all"
           >
             <Plus className="w-3 h-3" />
-            Add metric
+            Add filter
           </button>
         </div>
 
         {/* ── Run ── */}
-        <div className="flex items-center gap-3 pt-3 border-t border-slate-800/60">
+        <div className="order-3 flex items-center gap-3 pt-3 border-t border-slate-800/60">
           <button
             onClick={run}
             disabled={running || dims.length === 0}
@@ -695,7 +701,7 @@ export default function AssociationMiner({ data }: Props) {
 
         {/* ── Results ── */}
         {result !== null && (
-          <div className="pt-4 border-t border-slate-800/60 space-y-3">
+          <div className="order-4 pt-4 border-t border-slate-800/60 space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="space-y-1">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -959,25 +965,28 @@ export default function AssociationMiner({ data }: Props) {
 
             <div className="space-y-4 text-xs text-slate-400 leading-relaxed">
               <div>
-                <p className="text-slate-200 font-medium mb-1">1. Dimensions — what column to analyze</p>
-                <p><span className="text-violet-400 font-medium">Group by</span> — split results into one row per unique value (e.g. one row per Region).</p>
-                <p className="mt-1"><span className="text-blue-400 font-medium">Filter</span> — restrict which rows are shown, but the 100% total stays the same. Use this to zoom into a subset without changing the denominator.</p>
+                <p className="text-slate-200 font-medium mb-1">1. Filter — define your dataset (100%)</p>
+                <p>Set conditions that decide which rows to analyse. All rows matching these conditions become your 100% base.</p>
+                <ul className="mt-1 space-y-1 list-disc list-inside">
+                  <li><span className="text-emerald-400">Date column</span> — set a From / To date range (e.g. 01 May – 31 May).</li>
+                  <li><span className="text-amber-400">Numeric column</span> — sum of that column across matching rows = 100%.</li>
+                  <li><span className="text-amber-400">Categorical column</span> — count rows where the column equals the selected values.</li>
+                  <li><span className="text-slate-400">Row count</span> — count every row (no extra condition).</li>
+                </ul>
+                <p className="mt-1 text-slate-500">Example: Date May 1–31 → 991 matching rows = 100%.</p>
               </div>
 
               <div>
-                <p className="text-slate-200 font-medium mb-1">2. Metrics — define the 100% population</p>
-                <p>Each metric adds a condition. All conditions are combined (AND) to define which rows count as 100%.</p>
-                <ul className="mt-1 space-y-1 list-disc list-inside">
-                  <li><span className="text-emerald-400">Date column</span> — set a From / To date range.</li>
-                  <li><span className="text-amber-400">Numeric column</span> — set a min / max value range.</li>
-                  <li><span className="text-amber-400">Categorical column</span> — pick specific values to include.</li>
-                </ul>
-                <p className="mt-1 text-slate-500">Example: Date Jan–Dec AND ShippingCost ≥ 1000 → only rows matching both conditions form the 100%.</p>
+                <p className="text-slate-200 font-medium mb-1">2. Dimension — contribution breakdown</p>
+                <p>Choose a column to split the filtered dataset by. Each group shows how many rows it contributes to the 100% total.</p>
+                <p className="mt-1"><span className="text-violet-400 font-medium">Group by</span> — one row per unique value, showing each value's % of the total.</p>
+                <p className="mt-1"><span className="text-blue-400 font-medium">Filter</span> — select specific values to focus on. Their % is still calculated against the full filter total, not just the selected subset.</p>
+                <p className="mt-1 text-slate-500">Example: Branch = PBL has 44 rows → 44 / 991 = 4.4%.</p>
               </div>
 
               <div>
                 <p className="text-slate-200 font-medium mb-1">3. Run Analysis</p>
-                <p>Each group shows its row count and what percentage it contributes to the total population defined by your metrics.</p>
+                <p>Each group shows its count (or sum) and the percentage it contributes to your filtered dataset. Groups with no matching rows show 0%.</p>
               </div>
 
               <div className="pt-2 border-t border-slate-800 text-slate-500">
