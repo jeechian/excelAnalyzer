@@ -4,26 +4,40 @@ export interface DimensionConfig {
   filterValues: string[];
   numericRange?: { min?: number; max?: number };
   numericGroupMode?: "split" | "combine";
+  dateRange?: { start?: string; end?: string };
+  dateGroupMode?: "split" | "combine";
 }
 
 export interface MetricConfig {
+  id: string;
   col: string; // "__count__" = pure row count
-  filterValues: string[]; // categorical: filter to these values; empty = count all rows
+  filterValues: string[]; // categorical: filter to these values
+  numericRange?: { min?: number; max?: number }; // filter rows by numeric metric value
+  dateFilterCol?: string; // date column to apply date filter on
+  dateRange?: { start?: string; end?: string }; // date range filter (always combine)
+}
+
+export interface MetricMeta {
+  id: string;
+  label: string;
+  total: number;
+  isNumeric: boolean;
 }
 
 export interface ContributionRow {
   labels: Record<string, string>;
-  value: number;
-  percentage: number;
-  breakdown?: Record<string, number>; // per pivot value; set when ContributionResult.pivotValues is set
+  values: Record<string, number>;      // metric.id → aggregate value
+  percentages: Record<string, number>; // metric.id → %
+  breakdown?: Record<string, number>;  // pivot: filterValue → count
 }
 
 export interface ContributionResult {
   rows: ContributionRow[];
-  total: number;
-  isNumericMetric: boolean;
-  pivotValues?: string[]; // categorical metric with ≥2 selected values → one column per value
+  metricMetas: MetricMeta[];
+  pivotValues?: string[]; // only when 1 categorical metric with ≥2 filterValues
 }
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function sumRows(rows: Record<string, unknown>[], col: string): number {
   return rows.reduce((acc, r) => {
@@ -36,7 +50,7 @@ function applyNumericRange(
   rows: Record<string, unknown>[],
   col: string,
   range: { min?: number; max?: number }
-) {
+): Record<string, unknown>[] {
   return rows.filter((r) => {
     const raw = r[col];
     if (raw === "" || raw === null || raw === undefined) return true;
@@ -48,154 +62,394 @@ function applyNumericRange(
   });
 }
 
-function dimLabel(dim: DimensionConfig): string {
-  if (dim.numericRange) {
-    const { min, max } = dim.numericRange;
-    const parts: string[] = [];
-    if (min !== undefined) parts.push(`≥ ${min}`);
-    if (max !== undefined) parts.push(`≤ ${max}`);
-    return parts.join(" & ");
+function parseStoredDate(v: string): Date | null {
+  // "01 Jan 2026" or "01 Jan 2026 12:19"
+  const m1 = v.match(/^(\d{2}) ([A-Z][a-z]{2}) (\d{4})/);
+  if (m1) {
+    const months: Record<string, number> = {
+      Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+      Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+    };
+    return new Date(Number(m1[3]), months[m1[2]] ?? 0, Number(m1[1]));
   }
+  // "YYYY-MM-DD" or "YYYY-MM-DD HH:MM"
+  const m2 = v.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m2) return new Date(Number(m2[1]), Number(m2[2]) - 1, Number(m2[3]));
+  return null;
+}
+
+function parseInputDate(s: string): Date | null {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function isInDateRange(
+  rowVal: string,
+  range: { start?: string; end?: string }
+): boolean {
+  const d = parseStoredDate(rowVal);
+  if (!d) return true;
+  if (range.start) {
+    const s = parseInputDate(range.start);
+    if (s && d < s) return false;
+  }
+  if (range.end) {
+    const e = parseInputDate(range.end);
+    if (e) {
+      e.setHours(23, 59, 59, 999);
+      if (d > e) return false;
+    }
+  }
+  return true;
+}
+
+function formatDateRangeLabel(range: { start?: string; end?: string }): string {
+  const fmt = (s: string): string => {
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return s;
+    return `${m[3]} ${months[Number(m[2]) - 1]} ${m[1]}`;
+  };
+  const parts: string[] = [];
+  if (range.start) parts.push(fmt(range.start));
+  if (range.end) parts.push(fmt(range.end));
+  return parts.join(" – ");
+}
+
+function numericRangeLabel(range: { min?: number; max?: number }): string {
+  const parts: string[] = [];
+  if (range.min !== undefined) parts.push(`≥ ${range.min}`);
+  if (range.max !== undefined) parts.push(`≤ ${range.max}`);
+  return parts.join(" & ");
+}
+
+// ─── Metric helpers ──────────────────────────────────────────────────────────
+
+function applyMetricFilters(
+  rows: Record<string, unknown>[],
+  m: MetricConfig
+): Record<string, unknown>[] {
+  let filtered = rows;
+  if (m.dateFilterCol && m.dateRange && (m.dateRange.start || m.dateRange.end)) {
+    filtered = filtered.filter((r) =>
+      isInDateRange(String(r[m.dateFilterCol!] ?? ""), m.dateRange!)
+    );
+  }
+  return filtered;
+}
+
+function applyPostAggregationFilter(
+  rows: ContributionRow[],
+  metrics: MetricConfig[],
+  metricMetas: MetricMeta[]
+): ContributionRow[] {
+  let filtered = rows;
+  for (let i = 0; i < metrics.length; i++) {
+    const m = metrics[i];
+    const meta = metricMetas[i];
+    if (!meta.isNumeric || !m.numericRange) continue;
+    const { min, max } = m.numericRange;
+    if (min === undefined && max === undefined) continue;
+    filtered = filtered.filter((row) => {
+      const v = row.values[m.id] ?? 0;
+      if (min !== undefined && v < min) return false;
+      if (max !== undefined && v > max) return false;
+      return true;
+    });
+    meta.total = filtered.reduce((acc, row) => acc + (row.values[m.id] ?? 0), 0);
+    for (const row of filtered) {
+      row.percentages[m.id] = meta.total > 0 ? ((row.values[m.id] ?? 0) / meta.total) * 100 : 0;
+    }
+  }
+  return filtered;
+}
+
+function computeMetricVal(
+  m: MetricConfig,
+  isNumericM: boolean,
+  rows: Record<string, unknown>[]
+): number {
+  const filtered = applyMetricFilters(rows, m);
+  if (isNumericM) return sumRows(filtered, m.col);
+  if (m.col === "__count__") return filtered.length;
+  if (m.filterValues.length === 0) return filtered.length;
+  return filtered.filter((r) => m.filterValues.includes(String(r[m.col] ?? ""))).length;
+}
+
+function computeBreakdown(
+  rows: Record<string, unknown>[],
+  metricCol: string,
+  pivotValues: string[]
+): Record<string, number> {
+  const bd: Record<string, number> = {};
+  for (const v of pivotValues) {
+    bd[v] = rows.filter((r) => String(r[metricCol] ?? "") === v).length;
+  }
+  return bd;
+}
+
+// ─── Main function ───────────────────────────────────────────────────────────
+
+// Returns true if dim contributes a column to the results table
+function isDimGroupKey(dim: DimensionConfig): boolean {
+  if (dim.mode === "groupby") return true;
+  // categorical expand: filter with ≥2 values and no range constraints
+  if (dim.mode === "filter" && !dim.numericRange && !dim.dateRange && dim.filterValues.length >= 2) return true;
+  return false;
+}
+
+function getGroupKey(row: Record<string, unknown>, dim: DimensionConfig): string {
+  // Numeric combine
+  if (dim.numericRange && (dim.numericRange.min !== undefined || dim.numericRange.max !== undefined)) {
+    if ((dim.numericGroupMode ?? "split") === "combine") {
+      return numericRangeLabel(dim.numericRange);
+    }
+    return String(row[dim.col] ?? "");
+  }
+  // Date combine
+  if (dim.dateRange && (dim.dateRange.start || dim.dateRange.end)) {
+    if ((dim.dateGroupMode ?? "split") === "combine") {
+      return formatDateRangeLabel(dim.dateRange);
+    }
+    return String(row[dim.col] ?? "");
+  }
+  return String(row[dim.col] ?? "");
+}
+
+function getDimFilterLabel(dim: DimensionConfig): string {
+  if (dim.numericRange) return numericRangeLabel(dim.numericRange);
+  if (dim.dateRange) return formatDateRangeLabel(dim.dateRange);
   return dim.filterValues.join(", ");
 }
 
 export function computeContribution(
   allRows: Record<string, unknown>[],
   dimensions: DimensionConfig[],
-  metric: MetricConfig,
+  metrics: MetricConfig[],
   numericCols: Set<string>
 ): ContributionResult {
-  const isNumeric = metric.col !== "__count__" && numericCols.has(metric.col);
-  const isCategorical = metric.col !== "__count__" && !isNumeric;
-
-  // Pivot: categorical metric with ≥2 selected values → one column per value in output
+  // Pivot: only when exactly 1 metric, categorical, ≥2 filterValues
+  const onlyMetric = metrics.length === 1 ? metrics[0] : null;
+  const onlyIsNum = onlyMetric
+    ? onlyMetric.col !== "__count__" && numericCols.has(onlyMetric.col)
+    : false;
+  const onlyIsCat = onlyMetric ? onlyMetric.col !== "__count__" && !onlyIsNum : false;
   const pivotValues =
-    isCategorical && metric.filterValues.length >= 2 ? metric.filterValues : undefined;
+    onlyIsCat && onlyMetric!.filterValues.length >= 2 ? onlyMetric!.filterValues : undefined;
 
-  const allFilterDims = dimensions.filter(
-    (d) =>
-      d.mode === "filter" &&
-      (d.filterValues.length > 0 ||
-        (d.numericRange &&
-          (d.numericRange.min !== undefined || d.numericRange.max !== undefined)))
-  );
-  const groupbyDims = dimensions.filter((d) => d.mode === "groupby");
-
-  // Expand dims: categorical filter with ≥2 values → restrict AND create one row per value
-  const expandDims = allFilterDims.filter((d) => !d.numericRange && d.filterValues.length >= 2);
-  // Restrict dims: numeric range or ≤1 categorical value → just filter data
-  const restrictDims = allFilterDims.filter((d) => d.numericRange || d.filterValues.length <= 1);
-
-  // Global denominator (before dimension filters, consistent with original behavior)
-  let globalRows = allRows;
-  if (pivotValues) {
-    globalRows = allRows.filter((r) => pivotValues.includes(String(r[metric.col] ?? "")));
-  } else if (isCategorical && metric.filterValues.length === 1) {
-    globalRows = allRows.filter((r) =>
-      metric.filterValues.includes(String(r[metric.col] ?? ""))
-    );
-  }
-  const total = isNumeric ? sumRows(globalRows, metric.col) : globalRows.length;
-
-  // Build working set
+  // Build working set first — dimension filters define the 100% base
   let working = allRows;
-  for (const dim of restrictDims) {
-    working = dim.numericRange
-      ? applyNumericRange(working, dim.col, dim.numericRange)
-      : working.filter((r) => dim.filterValues.includes(String(r[dim.col] ?? "")));
+  for (const dim of dimensions) {
+    if (dim.numericRange && (dim.numericRange.min !== undefined || dim.numericRange.max !== undefined)) {
+      working = applyNumericRange(working, dim.col, dim.numericRange);
+    }
+    if (dim.dateRange && (dim.dateRange.start || dim.dateRange.end)) {
+      working = working.filter((r) =>
+        isInDateRange(String(r[dim.col] ?? ""), dim.dateRange!)
+      );
+    }
+    if (!dim.numericRange && !dim.dateRange && dim.filterValues.length > 0) {
+      working = working.filter((r) => dim.filterValues.includes(String(r[dim.col] ?? "")));
+    }
   }
-  for (const dim of expandDims) {
-    working = working.filter((r) => dim.filterValues.includes(String(r[dim.col] ?? "")));
-  }
-  for (const dim of groupbyDims) {
-    if (dim.numericRange) working = applyNumericRange(working, dim.col, dim.numericRange);
-  }
+
+  // For pivot: filter working to pivot values
   if (pivotValues) {
-    working = working.filter((r) => pivotValues.includes(String(r[metric.col] ?? "")));
-  } else if (isCategorical && metric.filterValues.length === 1) {
     working = working.filter((r) =>
-      metric.filterValues.includes(String(r[metric.col] ?? ""))
+      pivotValues.includes(String(r[onlyMetric!.col] ?? ""))
     );
   }
 
-  // Effective groupby: original groupby dims + expand dims (preserving dimension order)
-  const effectiveGroupDims = dimensions.filter(
-    (d) =>
-      d.mode === "groupby" ||
-      (d.mode === "filter" && !d.numericRange && d.filterValues.length >= 2)
-  );
+  // Multi-metric mode: AND all metric conditions → population (100% base).
+  // Dimension group-by splits the population. Dimension filter restricts the numerator only — NOT the denominator.
+  if (metrics.length > 1) {
+    // 1. Build population from allRows + all metric conditions (dimension filters do NOT affect 100%)
+    let population = allRows;
+    const condParts: string[] = [];
 
-  // Pre-compute combine labels for numeric groupby dims
-  const numericGroupLabels: Record<string, string> = {};
-  for (const dim of groupbyDims) {
-    if (dim.numericRange && (dim.numericGroupMode ?? "split") === "combine") {
-      const { min, max } = dim.numericRange;
-      const parts: string[] = [];
-      if (min !== undefined) parts.push(`≥ ${min}`);
-      if (max !== undefined) parts.push(`≤ ${max}`);
-      numericGroupLabels[dim.col] = parts.join(" & ");
+    for (const m of metrics) {
+      if (m.col === "__count__") continue;
+      if (m.dateFilterCol && m.dateRange && (m.dateRange.start || m.dateRange.end)) {
+        population = population.filter((r) =>
+          isInDateRange(String(r[m.dateFilterCol!] ?? ""), m.dateRange!)
+        );
+        condParts.push(formatDateRangeLabel(m.dateRange));
+      }
+      if (numericCols.has(m.col) && m.numericRange &&
+          (m.numericRange.min !== undefined || m.numericRange.max !== undefined)) {
+        population = applyNumericRange(population, m.col, m.numericRange);
+        condParts.push(`${m.col} ${numericRangeLabel(m.numericRange)}`);
+      }
+      if (!numericCols.has(m.col) && !m.dateFilterCol && m.filterValues.length > 0) {
+        population = population.filter((r) =>
+          m.filterValues.includes(String(r[m.col] ?? ""))
+        );
+        condParts.push(`${m.col} ∈ {${m.filterValues.join(", ")}}`);
+      }
     }
-  }
 
-  function metricValue(rows: Record<string, unknown>[]): number {
-    return isNumeric ? sumRows(rows, metric.col) : rows.length;
-  }
+    const synthId = metrics.map((m) => m.id).join("+");
+    const total = population.length; // denominator = full metric population
 
-  function computeBreakdown(rows: Record<string, unknown>[]): Record<string, number> {
-    const bd: Record<string, number> = {};
-    for (const v of pivotValues!) {
-      bd[v] = rows.filter((r) => String(r[metric.col] ?? "") === v).length;
+    const groupKeyDimsM = dimensions.filter(isDimGroupKey);
+    const filterOnlyDimsM = dimensions.filter((d) => !isDimGroupKey(d));
+
+    // 2. Apply dimension filters to population — restricts the numerator only
+    let visible = population;
+    for (const dim of filterOnlyDimsM) {
+      if (dim.numericRange && (dim.numericRange.min !== undefined || dim.numericRange.max !== undefined)) {
+        visible = applyNumericRange(visible, dim.col, dim.numericRange);
+      } else if (dim.dateRange && (dim.dateRange.start || dim.dateRange.end)) {
+        visible = visible.filter((r) => isInDateRange(String(r[dim.col] ?? ""), dim.dateRange!));
+      } else if (dim.filterValues.length > 0) {
+        visible = visible.filter((r) => dim.filterValues.includes(String(r[dim.col] ?? "")));
+      }
     }
-    return bd;
-  }
 
-  // No effective groupby: single row
-  if (effectiveGroupDims.length === 0) {
-    const value = metricValue(working);
-    const labels: Record<string, string> = {};
-    for (const dim of restrictDims) labels[dim.col] = dimLabel(dim);
-    const row: ContributionRow = {
-      labels,
-      value,
-      percentage: total > 0 ? (value / total) * 100 : 0,
+    const synthMeta: MetricMeta = {
+      id: synthId,
+      label: `Count${condParts.length ? ` · ${condParts.join(" & ")}` : ""}`,
+      total,
+      isNumeric: false,
     };
-    if (pivotValues) row.breakdown = computeBreakdown(working);
-    return { rows: [row], total, isNumericMetric: isNumeric, pivotValues };
+
+    const filterLabelsM: Record<string, string> = {};
+    for (const dim of filterOnlyDimsM) filterLabelsM[dim.col] = getDimFilterLabel(dim);
+
+    function buildMultiRow(
+      groupRows: Record<string, unknown>[],
+      extraLabels: Record<string, string>
+    ): ContributionRow {
+      const count = groupRows.length;
+      return {
+        labels: { ...extraLabels },
+        values: { [synthId]: count },
+        percentages: { [synthId]: total > 0 ? (count / total) * 100 : 0 },
+      };
+    }
+
+    // 3. Group visible rows by group-by dimensions
+    if (groupKeyDimsM.length === 0) {
+      return { rows: [buildMultiRow(visible, filterLabelsM)], metricMetas: [synthMeta], pivotValues: undefined };
+    }
+
+    const groupsM = new Map<string, Record<string, unknown>[]>();
+    for (const row of visible) {
+      const key = groupKeyDimsM.map((d) => `${d.col}|||${getGroupKey(row, d)}`).join("^^^");
+      if (!groupsM.has(key)) groupsM.set(key, []);
+      groupsM.get(key)!.push(row);
+    }
+
+    const multiRows: ContributionRow[] = [];
+    for (const [key, groupRows] of groupsM) {
+      const labels = { ...filterLabelsM };
+      for (const part of key.split("^^^")) {
+        const sep = part.indexOf("|||");
+        if (sep !== -1) labels[part.slice(0, sep)] = part.slice(sep + 3);
+      }
+      multiRows.push(buildMultiRow(groupRows, labels));
+    }
+
+    multiRows.sort((a, b) => (b.values[synthId] ?? 0) - (a.values[synthId] ?? 0));
+    return { rows: multiRows, metricMetas: [synthMeta], pivotValues: undefined };
   }
 
-  // Group by effective group dims
+  // Metric metadata and global totals — computed from working, not allRows
+  const metricMetas: MetricMeta[] = metrics.map((m) => {
+    const isNumericM = m.col !== "__count__" && numericCols.has(m.col);
+    const isCategorical = m.col !== "__count__" && !isNumericM;
+
+    let globalRows: Record<string, unknown>[];
+    if (pivotValues && m === onlyMetric) {
+      globalRows = working.filter((r) =>
+        pivotValues.includes(String(r[m.col] ?? ""))
+      );
+    } else {
+      globalRows = applyMetricFilters(working, m);
+      if (isCategorical && m.filterValues.length > 0) {
+        globalRows = globalRows.filter((r) =>
+          m.filterValues.includes(String(r[m.col] ?? ""))
+        );
+      }
+    }
+    const total = isNumericM ? sumRows(globalRows, m.col) : globalRows.length;
+
+    let label: string;
+    if (m.col === "__count__") {
+      label = "Count";
+    } else if (isNumericM) {
+      const rangePart =
+        m.numericRange && (m.numericRange.min !== undefined || m.numericRange.max !== undefined)
+          ? ` [${numericRangeLabel(m.numericRange)}]`
+          : "";
+      label = `${m.col}${rangePart} (sum)`;
+    } else if (m.filterValues.length > 0) {
+      label = `${m.col} = ${m.filterValues.join("/")} (count)`;
+    } else {
+      label = `${m.col} (count)`;
+    }
+    if (m.dateFilterCol && m.dateRange && (m.dateRange.start || m.dateRange.end)) {
+      label += ` · ${formatDateRangeLabel(m.dateRange)}`;
+    }
+
+    return { id: m.id, label, total, isNumeric: isNumericM };
+  });
+
+  const groupKeyDims = dimensions.filter(isDimGroupKey);
+  const filterOnlyDims = dimensions.filter((d) => !isDimGroupKey(d));
+
+  function buildRow(
+    groupRows: Record<string, unknown>[],
+    extraLabels: Record<string, string>
+  ): ContributionRow {
+    const labels = { ...extraLabels };
+    const values: Record<string, number> = {};
+    const percentages: Record<string, number> = {};
+    for (let i = 0; i < metrics.length; i++) {
+      const m = metrics[i];
+      const meta = metricMetas[i];
+      const v = pivotValues
+        ? groupRows.length
+        : computeMetricVal(m, meta.isNumeric, groupRows);
+      values[m.id] = v;
+      percentages[m.id] = meta.total > 0 ? (v / meta.total) * 100 : 0;
+    }
+    const row: ContributionRow = { labels, values, percentages };
+    if (pivotValues) row.breakdown = computeBreakdown(groupRows, onlyMetric!.col, pivotValues);
+    return row;
+  }
+
+  const filterLabels: Record<string, string> = {};
+  for (const dim of filterOnlyDims) filterLabels[dim.col] = getDimFilterLabel(dim);
+
+  // No group key dims → single aggregate row
+  if (groupKeyDims.length === 0) {
+    return {
+      rows: applyPostAggregationFilter([buildRow(working, filterLabels)], metrics, metricMetas),
+      metricMetas,
+      pivotValues,
+    };
+  }
+
+  // Group by group key dims
   const groups = new Map<string, Record<string, unknown>[]>();
   for (const row of working) {
-    const key = effectiveGroupDims
-      .map((d) => {
-        const label = numericGroupLabels[d.col];
-        return label !== undefined
-          ? `${d.col}|||${label}`
-          : `${d.col}|||${String(row[d.col] ?? "")}`;
-      })
-      .join("^^^");
+    const key = groupKeyDims.map((d) => `${d.col}|||${getGroupKey(row, d)}`).join("^^^");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
   }
 
   const rows: ContributionRow[] = [];
   for (const [key, groupRows] of groups) {
-    const labels: Record<string, string> = {};
-    for (const dim of restrictDims) labels[dim.col] = dimLabel(dim);
+    const labels = { ...filterLabels };
     for (const part of key.split("^^^")) {
       const sep = part.indexOf("|||");
       if (sep !== -1) labels[part.slice(0, sep)] = part.slice(sep + 3);
     }
-    const value = pivotValues ? groupRows.length : metricValue(groupRows);
-    const row: ContributionRow = {
-      labels,
-      value,
-      percentage: total > 0 ? (value / total) * 100 : 0,
-    };
-    if (pivotValues) row.breakdown = computeBreakdown(groupRows);
-    rows.push(row);
+    rows.push(buildRow(groupRows, labels));
   }
 
-  rows.sort((a, b) => b.value - a.value);
-  return { rows, total, isNumericMetric: isNumeric, pivotValues };
+  rows.sort((a, b) => (b.values[metrics[0]?.id] ?? 0) - (a.values[metrics[0]?.id] ?? 0));
+  return { rows: applyPostAggregationFilter(rows, metrics, metricMetas), metricMetas, pivotValues };
 }

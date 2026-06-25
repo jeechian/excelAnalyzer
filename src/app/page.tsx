@@ -1,6 +1,6 @@
 "use client";
 import { useState, useMemo } from "react";
-import { FileSpreadsheet, RefreshCw } from "lucide-react";
+import { FileSpreadsheet, RefreshCw, HelpCircle, X } from "lucide-react";
 import FileUpload from "@/components/FileUpload";
 import DataPreview from "@/components/DataPreview";
 import ColumnConfigurator from "@/components/ColumnConfigurator";
@@ -24,6 +24,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<"summary" | "association">("summary");
+  const [showSummaryHelp, setShowSummaryHelp] = useState(false);
 
   const handleFile = async (file: File) => {
     setLoading(true);
@@ -150,20 +151,31 @@ export default function Home() {
             <DataPreview data={data} />
 
             {/* Mode tabs */}
-            <div className="flex gap-1 p-1 rounded-xl border border-slate-800 bg-slate-900/50 w-fit">
-              {(["summary", "association"] as const).map((m) => (
+            <div className="flex items-center gap-3">
+              <div className="flex gap-1 p-1 rounded-xl border border-slate-800 bg-slate-900/50 w-fit">
+                {(["summary", "association"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                      mode === m
+                        ? "bg-slate-700 text-slate-100 shadow-sm"
+                        : "text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    {m === "summary" ? "Summary" : "Association Analysis"}
+                  </button>
+                ))}
+              </div>
+              {mode === "summary" && (
                 <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-                    mode === m
-                      ? "bg-slate-700 text-slate-100 shadow-sm"
-                      : "text-slate-500 hover:text-slate-300"
-                  }`}
+                  onClick={() => setShowSummaryHelp(true)}
+                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 px-3 py-2 rounded-lg border border-slate-800 hover:border-slate-700 transition-all"
                 >
-                  {m === "summary" ? "Summary" : "Association Analysis"}
+                  <HelpCircle className="w-3 h-3" />
+                  How to use
                 </button>
-              ))}
+              )}
             </div>
 
             {/* Summary tab */}
@@ -219,6 +231,56 @@ export default function Home() {
           </>
         )}
       </main>
+
+      {/* Summary how to use modal */}
+      {showSummaryHelp && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setShowSummaryHelp(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-100">How to use Summary</h2>
+              <button onClick={() => setShowSummaryHelp(false)} className="text-slate-500 hover:text-slate-300">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs text-slate-400 leading-relaxed">
+              <div>
+                <p className="text-slate-200 font-medium mb-1">1. Upload your Excel file</p>
+                <p>Click the upload area or drag and drop an Excel (.xlsx, .xls) or CSV file. Your data loads instantly — nothing is sent to a server.</p>
+              </div>
+
+              <div>
+                <p className="text-slate-200 font-medium mb-1">2. Configure columns</p>
+                <ul className="space-y-1 list-disc list-inside">
+                  <li><span className="text-violet-400 font-medium">Group by</span> — split the data into groups by this column's values (e.g. one row per Region).</li>
+                  <li><span className="text-blue-400 font-medium">Filter</span> — narrow the data to specific values, a date range, or a numeric range.</li>
+                  <li><span className="text-slate-500 font-medium">Ignore</span> — exclude the column from analysis.</li>
+                </ul>
+              </div>
+
+              <div>
+                <p className="text-slate-200 font-medium mb-1">3. Read the results</p>
+                <p>Each row in the summary table is one combination of your grouped columns. You can see the row count and sums of any numeric columns. The chart visualizes the top groups.</p>
+              </div>
+
+              <div>
+                <p className="text-slate-200 font-medium mb-1">4. Sort</p>
+                <p>Use the sort controls to order results by any column — ascending or descending.</p>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 text-slate-500">
+                Switch to <span className="text-slate-300">Association Analysis</span> to see how much each group contributes to a metric.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
