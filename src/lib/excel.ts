@@ -4,6 +4,7 @@ export interface ExcelData {
   headers: string[];
   rows: Record<string, unknown>[];
   sheetName: string;
+  dateColumns: string[];
 }
 
 export function parseExcelFile(file: File): Promise<ExcelData> {
@@ -64,8 +65,16 @@ export function parseExcelFile(file: File): Promise<ExcelData> {
 
         // Build data rows from rows after the header
         const rows: Record<string, unknown>[] = [];
+        const dateColCount: Record<number, number> = {};
         for (let r = headerRowIndex + 1; r < rawRows.length; r++) {
           const rawRow = rawRows[r];
+
+          // Stop at footer rows: 2+ cells starting with "Total", "Grand Total", "Subtotal", etc.
+          const footerCells = rawRow.filter(
+            (v) => typeof v === "string" && /^(total|grand\s*total|sub\s*total|subtotal)\b/i.test(String(v).trim())
+          );
+          if (footerCells.length >= 2) break;
+
           // Skip completely empty rows
           const hasData = rawRow.some(
             (v) => v !== null && v !== undefined && String(v).trim() !== ""
@@ -76,11 +85,14 @@ export function parseExcelFile(file: File): Promise<ExcelData> {
           for (let ci = 0; ci < colIndices.length; ci++) {
             const colIdx = colIndices[ci];
             let val = rawRow[colIdx] ?? "";
-            // Format dates as readable strings
+            // Format dates/datetimes as readable strings, track which header indices are dates
             if (val instanceof Date) {
-              val = val.toLocaleDateString("en-GB", {
-                day: "2-digit", month: "short", year: "numeric",
-              });
+              dateColCount[ci] = (dateColCount[ci] ?? 0) + 1;
+              const hasTime = val.getHours() !== 0 || val.getMinutes() !== 0 || val.getSeconds() !== 0;
+              const datePart = val.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+              val = hasTime
+                ? datePart + " " + val.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+                : datePart;
             }
             obj[headers[ci]] = val;
           }
@@ -92,7 +104,11 @@ export function parseExcelFile(file: File): Promise<ExcelData> {
           return;
         }
 
-        resolve({ headers, rows, sheetName });
+        const dateColumns = headers.filter(
+          (_, i) => (dateColCount[i] ?? 0) > rows.length * 0.5
+        );
+
+        resolve({ headers, rows, sheetName, dateColumns });
       } catch (err) {
         reject(new Error("Failed to parse Excel file: " + (err as Error).message));
       }
@@ -107,14 +123,26 @@ export function isNumeric(value: unknown): boolean {
   return !isNaN(Number(value));
 }
 
+function looksLikeDate(v: unknown): boolean {
+  if (!v || typeof v !== "string") return false;
+  // "01 Jan 2026" or "01 Jan 2026 12:19" (our formatted output)
+  if (/^\d{2} [A-Z][a-z]{2} \d{4}/.test(v)) return true;
+  // "2026-05-01" or "2026-05-01 12:19" or "2026-05-01T12:19"
+  if (/^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2})?$/.test(v)) return true;
+  return false;
+}
+
 export function getColumnStats(rows: Record<string, unknown>[], col: string) {
   const values = rows.map((r) => r[col]);
   const numericValues = values.filter(isNumeric).map(Number);
   const isNumericCol = numericValues.length > rows.length * 0.5;
   const uniqueValues = [...new Set(values.map((v) => String(v ?? "")))];
+  const dateLikeCount = values.filter(looksLikeDate).length;
+  const isDateCol = !isNumericCol && dateLikeCount > rows.length * 0.5;
 
   return {
     isNumeric: isNumericCol,
+    isDate: isDateCol,
     uniqueCount: uniqueValues.length,
     uniqueValues: uniqueValues.slice(0, 50),
     numericValues,
@@ -127,6 +155,22 @@ export interface ColumnConfig {
   col: string;
   mode: ColumnMode;
   selectedValues: string[];
+  dateRange?: { start?: string; end?: string };
+  dateGroupMode?: "split" | "combine";
+  numericRange?: { min?: string; max?: string };
+  numericGroupMode?: "split" | "combine";
+}
+
+function parseLocalDate(dateStr: string): Date | null {
+  if (!dateStr) return null;
+  // "YYYY-MM-DD" — avoid UTC interpretation
+  const m1 = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m1) return new Date(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3]));
+  // "YYYY-MM-DD HH:MM" or "YYYY-MM-DDTHH:MM" — local datetime
+  const m2 = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (m2) return new Date(Number(m2[1]), Number(m2[2]) - 1, Number(m2[3]), Number(m2[4]), Number(m2[5]));
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 export interface SummaryRow {
@@ -161,12 +205,89 @@ export function computeSummary(
     );
   }
 
-  // Group by separate columns + multi-select columns
-  const groupCols = [...separateCols, ...multiSelectCols];
+  // Filter rows by date ranges
+  for (const cfg of columnConfigs) {
+    if (cfg.mode !== "select" || !cfg.dateRange) continue;
+    const { start, end } = cfg.dateRange;
+    if (!start && !end) continue;
+    filtered = filtered.filter((row) => {
+      const rowDate = parseLocalDate(String(row[cfg.col] ?? ""));
+      if (!rowDate) return true;
+      if (start) {
+        const s = parseLocalDate(start);
+        if (s && rowDate < s) return false;
+      }
+      if (end) {
+        const e = parseLocalDate(end);
+        if (e) {
+          e.setHours(23, 59, 59, 999);
+          if (rowDate > e) return false;
+        }
+      }
+      return true;
+    });
+  }
+
+  // Filter rows by numeric ranges
+  for (const cfg of columnConfigs) {
+    if (cfg.mode !== "select" || !cfg.numericRange) continue;
+    const { min, max } = cfg.numericRange;
+    if (!min && !max) continue;
+    filtered = filtered.filter((row) => {
+      const raw = row[cfg.col];
+      if (raw === "" || raw === null || raw === undefined) return true;
+      const v = Number(raw);
+      if (isNaN(v)) return true;
+      if (min && v < Number(min)) return false;
+      if (max && v > Number(max)) return false;
+      return true;
+    });
+  }
+
+  // Date range filter cols grouped into summary rows
+  const dateRangeCols = columnConfigs.filter(
+    (c) => c.mode === "select" && !!c.dateRange && (!!c.dateRange.start || !!c.dateRange.end)
+  );
+
+  // Numeric range filter cols grouped into summary rows
+  const numericRangeCols = columnConfigs.filter(
+    (c) => c.mode === "select" && !!c.numericRange && (!!c.numericRange.min || !!c.numericRange.max)
+  );
+
+  // For combine-mode date cols, pre-compute the "date1 + date2" label from actual filtered data
+  const combinedDateLabels: Record<string, string> = {};
+  for (const c of dateRangeCols) {
+    if (c.dateGroupMode === "combine") {
+      const unique = [...new Set(filtered.map((r) => String(r[c.col] ?? "")).filter(Boolean))].sort();
+      combinedDateLabels[c.col] = unique.length > 1
+        ? `${unique[0]} - ${unique[unique.length - 1]}`
+        : (unique[0] ?? "");
+    }
+  }
+
+  // For combine-mode numeric cols, use the range bounds as the label
+  const combinedNumericLabels: Record<string, string> = {};
+  for (const c of numericRangeCols) {
+    if ((c.numericGroupMode ?? "split") === "combine") {
+      const { min, max } = c.numericRange!;
+      const parts: string[] = [];
+      if (min) parts.push(`≥ ${min}`);
+      if (max) parts.push(`≤ ${max}`);
+      combinedNumericLabels[c.col] = parts.join(" & ");
+    }
+  }
+
+  // Group by separate + multi-select + date range + numeric range columns
+  const groupCols = [...separateCols, ...multiSelectCols, ...dateRangeCols, ...numericRangeCols];
   const groups: Map<string, Record<string, unknown>[]> = new Map();
   for (const row of filtered) {
     const key = groupCols
-      .map((c) => `${c.col}:::${String(row[c.col] ?? "")}`)
+      .map((c) => {
+        const combined = combinedDateLabels[c.col] ?? combinedNumericLabels[c.col];
+        return combined !== undefined
+          ? `${c.col}:::${combined}`
+          : `${c.col}:::${String(row[c.col] ?? "")}`;
+      })
       .join("||");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);

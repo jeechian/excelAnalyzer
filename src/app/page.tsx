@@ -6,6 +6,8 @@ import DataPreview from "@/components/DataPreview";
 import ColumnConfigurator from "@/components/ColumnConfigurator";
 import SortControls from "@/components/SortControls";
 import SummaryTable from "@/components/SummaryTable";
+import SummaryChart from "@/components/SummaryChart";
+import AssociationMiner from "@/components/AssociationMiner";
 import {
   parseExcelFile,
   getColumnStats,
@@ -21,6 +23,7 @@ export default function Home() {
   const [sortOrder, setSortOrder] = useState<SortEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [mode, setMode] = useState<"summary" | "association">("summary");
 
   const handleFile = async (file: File) => {
     setLoading(true);
@@ -48,29 +51,35 @@ export default function Home() {
     setConfigs([]);
     setSortOrder([]);
     setError(null);
+    setMode("summary");
   };
 
-  // Numeric columns (for summing)
+  // Numeric columns for summing — exclude cols used as range filters (they become group dimensions)
   const numericCols = useMemo(() => {
     if (!data) return [];
     return data.headers.filter((h) => {
       const stats = getColumnStats(data.rows, h);
-      return stats.isNumeric;
+      if (!stats.isNumeric) return false;
+      const cfg = configs.find((c) => c.col === h);
+      return !(cfg?.mode === "select" && (cfg.numericRange?.min || cfg.numericRange?.max));
     });
-  }, [data]);
+  }, [data, configs]);
 
-  // Columns in "separate" (group-by) mode
-  const separateCols = configs.filter((c) => c.mode === "separate").map((c) => c.col);
-
-  // Filter columns with 2+ values selected — shown as table columns too
-  const multiSelectCols = configs
-    .filter((c) => c.mode === "select" && c.selectedValues.length > 1)
-    .map((c) => c.col);
-
-  // Sortable: separate cols + multi-select cols + Count + numeric cols
+  // Sortable columns: follow config order, then Count, then numeric sums
   const sortableColumns = useMemo(() => {
-    return [...separateCols, ...multiSelectCols, "Count", ...numericCols];
-  }, [separateCols, multiSelectCols, numericCols]);
+    const activeCols = configs
+      .filter((c) => c.mode !== "ignore" && !numericCols.includes(c.col))
+      .filter((c) =>
+        c.mode === "separate" ||
+        (c.mode === "select" && (
+          c.selectedValues.length > 0 ||
+          (c.dateRange && (c.dateRange.start || c.dateRange.end)) ||
+          (c.numericRange && (c.numericRange.min || c.numericRange.max))
+        ))
+      )
+      .map((c) => c.col);
+    return [...activeCols, "Count", ...numericCols];
+  }, [configs, numericCols]);
 
   // Summary
   const summaryResults = useMemo(() => {
@@ -140,41 +149,73 @@ export default function Home() {
             {/* Preview */}
             <DataPreview data={data} />
 
-            {/* Column config */}
-            <ColumnConfigurator
-              data={data}
-              configs={configs}
-              onChange={setConfigs}
-            />
+            {/* Mode tabs */}
+            <div className="flex gap-1 p-1 rounded-xl border border-slate-800 bg-slate-900/50 w-fit">
+              {(["summary", "association"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                    mode === m
+                      ? "bg-slate-700 text-slate-100 shadow-sm"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  {m === "summary" ? "Summary" : "Association Analysis"}
+                </button>
+              ))}
+            </div>
 
-            {/* Sort controls - only when something is active */}
-            {showSummary && (
-              <SortControls
-                sortableColumns={sortableColumns}
-                sortOrder={sortOrder}
-                onSortOrder={setSortOrder}
-              />
+            {/* Summary tab */}
+            {mode === "summary" && (
+              <>
+                {/* Column config */}
+                <ColumnConfigurator
+                  data={data}
+                  configs={configs}
+                  onChange={setConfigs}
+                />
+
+                {/* Sort controls - only when something is active */}
+                {showSummary && (
+                  <SortControls
+                    sortableColumns={sortableColumns}
+                    sortOrder={sortOrder}
+                    onSortOrder={setSortOrder}
+                  />
+                )}
+
+                {/* Summary */}
+                {showSummary && (
+                  <SummaryTable
+                    results={summaryResults}
+                    configs={configs}
+                    numericCols={numericCols}
+                  />
+                )}
+
+                {/* Chart */}
+                {showSummary && summaryResults.length > 0 && (
+                  <SummaryChart
+                    results={summaryResults}
+                    configs={configs}
+                    numericCols={numericCols}
+                  />
+                )}
+
+                {/* Hint when nothing configured */}
+                {!showSummary && (
+                  <div className="rounded-xl border border-dashed border-slate-800 p-10 text-center">
+                    <p className="text-slate-500 text-sm">
+                      Set at least one column to <span className="text-blue-400">Filter</span> or <span className="text-violet-400">Group by</span> to see a summary.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
-            {/* Summary */}
-            {showSummary && (
-              <SummaryTable
-                results={summaryResults}
-                separateCols={separateCols}
-                multiSelectCols={multiSelectCols}
-                numericCols={numericCols}
-                configs={configs}
-              />
-            )}
-
-            {/* Hint when nothing configured */}
-            {!showSummary && (
-              <div className="rounded-xl border border-dashed border-slate-800 p-10 text-center">
-                <p className="text-slate-500 text-sm">
-                  Set at least one column to <span className="text-blue-400">Filter</span> or <span className="text-violet-400">Group by</span> to see a summary.
-                </p>
-              </div>
-            )}
+            {/* Association tab */}
+            {mode === "association" && <AssociationMiner data={data} />}
           </>
         )}
       </main>
