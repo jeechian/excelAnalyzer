@@ -132,26 +132,42 @@ export default function AssociationMiner({ data }: Props) {
 
   const handleExport = () => {
     if (!result) return;
-    const groupbyCols = dims.filter((d) => d.mode === "groupby").map((d) => d.col);
     const metricLabel =
       metricCol === "__count__"
         ? "Count"
         : metricIsNumeric
         ? `${metricCol} Sum`
         : `${metricCol} Count`;
-    const exportRows = result.rows.map((r) => ({
-      ...Object.fromEntries(groupbyCols.map((c) => [c, r.labels[c] ?? ""])),
-      [metricLabel]: r.value,
-      "% of Total": parseFloat(r.percentage.toFixed(2)),
-    }));
+    const exportRows = result.pivotValues
+      ? result.rows.map((r) => ({
+          ...Object.fromEntries(effectiveGroupbyCols.map((c) => [c, r.labels[c] ?? ""])),
+          ...Object.fromEntries(result.pivotValues!.map((v) => [v, r.breakdown?.[v] ?? 0])),
+          "% of Total": parseFloat(r.percentage.toFixed(2)),
+        }))
+      : result.rows.map((r) => ({
+          ...Object.fromEntries(effectiveGroupbyCols.map((c) => [c, r.labels[c] ?? ""])),
+          [metricLabel]: r.value,
+          "% of Total": parseFloat(r.percentage.toFixed(2)),
+        }));
     const ws = XLSX.utils.json_to_sheet(exportRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Contribution");
     XLSX.writeFile(wb, "contribution.xlsx");
   };
 
-  const groupbyCols = dims.filter((d) => d.mode === "groupby").map((d) => d.col);
-  const filterDims = dims.filter((d) => d.mode === "filter" && d.filterValues.length > 0);
+  const isExpandDim = (d: DimState) =>
+    d.mode === "filter" && !d.numericRange && d.filterValues.length >= 2;
+  const effectiveGroupbyCols = dims
+    .filter((d) => d.mode === "groupby" || isExpandDim(d))
+    .map((d) => d.col);
+  const shownFilterDims = dims.filter(
+    (d) =>
+      d.mode === "filter" &&
+      !isExpandDim(d) &&
+      (d.filterValues.length > 0 ||
+        (d.numericRange &&
+          (d.numericRange.min !== undefined || d.numericRange.max !== undefined)))
+  );
 
   const metricHeaderLabel =
     metricCol === "__count__"
@@ -507,10 +523,10 @@ export default function AssociationMiner({ data }: Props) {
                   </span>
                 </div>
                 {/* Applied filters */}
-                {filterDims.length > 0 && (
+                {shownFilterDims.length > 0 && (
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[11px] text-slate-500">Filtered to:</span>
-                    {filterDims.map((d) => {
+                    {shownFilterDims.map((d) => {
                       const lbl = d.numericRange
                         ? [
                             d.numericRange.min !== undefined ? `≥ ${d.numericRange.min}` : "",
@@ -551,7 +567,7 @@ export default function AssociationMiner({ data }: Props) {
                 <table className="w-full">
                   <thead>
                     <tr className="bg-slate-900 border-b border-slate-800">
-                      {groupbyCols.map((c, i) => (
+                      {effectiveGroupbyCols.map((c, i) => (
                         <th
                           key={c}
                           className={`px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider ${
@@ -561,9 +577,17 @@ export default function AssociationMiner({ data }: Props) {
                           {c}
                         </th>
                       ))}
-                      <th className="px-4 py-2.5 text-right text-[11px] font-medium text-amber-400 uppercase tracking-wider">
-                        {metricHeaderLabel}
-                      </th>
+                      {result.pivotValues ? (
+                        result.pivotValues.map((v) => (
+                          <th key={v} className="px-4 py-2.5 text-right text-[11px] font-medium text-amber-400 uppercase tracking-wider">
+                            {v}
+                          </th>
+                        ))
+                      ) : (
+                        <th className="px-4 py-2.5 text-right text-[11px] font-medium text-amber-400 uppercase tracking-wider">
+                          {metricHeaderLabel}
+                        </th>
+                      )}
                       <th className="px-4 py-2.5 text-right text-[11px] font-medium text-slate-400 uppercase tracking-wider w-44">
                         % of Total
                       </th>
@@ -572,7 +596,7 @@ export default function AssociationMiner({ data }: Props) {
                   <tbody className="divide-y divide-slate-800/40">
                     {result.rows.slice(0, visible).map((row, i) => (
                       <tr key={i} className="hover:bg-slate-900/50 transition-colors">
-                        {groupbyCols.map((c, ci) => (
+                        {effectiveGroupbyCols.map((c, ci) => (
                           <td
                             key={c}
                             className={`px-4 py-2.5 text-sm font-medium ${
@@ -582,9 +606,17 @@ export default function AssociationMiner({ data }: Props) {
                             {row.labels[c] ?? "—"}
                           </td>
                         ))}
-                        <td className="px-4 py-2.5 text-right font-mono text-xs text-amber-200">
-                          {fmtNum(row.value, !result.isNumericMetric)}
-                        </td>
+                        {result.pivotValues ? (
+                          result.pivotValues.map((v) => (
+                            <td key={v} className="px-4 py-2.5 text-right font-mono text-xs text-amber-200">
+                              {fmtNum(row.breakdown?.[v] ?? 0, true)}
+                            </td>
+                          ))
+                        ) : (
+                          <td className="px-4 py-2.5 text-right font-mono text-xs text-amber-200">
+                            {fmtNum(row.value, !result.isNumericMetric)}
+                          </td>
+                        )}
                         <td className="px-4 py-2.5">
                           <div className="flex items-center justify-end gap-2">
                             <div className="w-20 bg-slate-800 rounded-full h-1.5 flex-shrink-0 overflow-hidden">
@@ -603,17 +635,25 @@ export default function AssociationMiner({ data }: Props) {
                   </tbody>
                   <tfoot>
                     <tr className="bg-slate-900/60 border-t border-slate-700">
-                      {groupbyCols.length > 0 && (
+                      {effectiveGroupbyCols.length > 0 && (
                         <td
-                          colSpan={groupbyCols.length}
+                          colSpan={effectiveGroupbyCols.length}
                           className="px-4 py-2 text-right text-[11px] text-slate-500 font-medium uppercase tracking-wider"
                         >
                           Total
                         </td>
                       )}
-                      <td className="px-4 py-2 text-right font-mono text-xs text-amber-300 font-semibold">
-                        {fmtNum(result.total, !result.isNumericMetric)}
-                      </td>
+                      {result.pivotValues ? (
+                        result.pivotValues.map((v) => (
+                          <td key={v} className="px-4 py-2 text-right font-mono text-xs text-amber-300 font-semibold">
+                            {fmtNum(result.rows.reduce((a, r) => a + (r.breakdown?.[v] ?? 0), 0), true)}
+                          </td>
+                        ))
+                      ) : (
+                        <td className="px-4 py-2 text-right font-mono text-xs text-amber-300 font-semibold">
+                          {fmtNum(result.total, !result.isNumericMetric)}
+                        </td>
+                      )}
                       <td className="px-4 py-2 text-right font-mono text-xs text-slate-500">
                         100%
                       </td>
